@@ -1,0 +1,130 @@
+---
+####################################         Section for Linux (RHEL) Servers           ###################################
+- hosts: splunk_servers
+  become: true
+  tasks:
+
+  - name: update repo index
+    package:
+      update_cache: yes
+
+  - name: create temp directory
+    file:
+      path: /tmp/splunk
+      state: directory
+
+  - name: copy the splunk installer to the machine
+    copy:
+      src: "{{ playbook_dir }}/files/[current-splunk-enterprise-rpm]"
+      dest: /tmp/splunk/splunk-current-linux-x64.rpm
+      mode: 0644
+
+  - name: check if previously installed
+    stat:
+      path: /opt/splunk
+    register: splunk_present
+
+  - name: check if SPLUNK_HOME is set globally
+    stat:
+      path: /etc/profile.d/SPLUNK_HOME.sh
+    register: SPLUNK_HOME
+
+  - name: create splunk group if new install
+    group:
+      name: splunk
+    when: splunk_present.stat.exists == False
+
+  - name: create splunk user if new install
+    user:
+      name: splunk
+      group: splunk
+    when: splunk_present.stat.exists == False
+      
+  - name: Import Splunk PGP key
+    rpm_key:
+      state: present
+      key: https://docs.splunk.com/images/6/6b/SplunkPGPKey.pub
+
+  - name: install latest splunk enterprise
+    dnf:
+      name: /tmp/splunk/splunk-current-linux-x64.rpm
+      state: latest
+
+  - name: create SPLUNK_HOME.sh file if not there
+    copy:
+      src: ~/Documents/git/ansible_configs/splunk/files/SPLUNK_HOME.sh
+      dest: /etc/profile.d/SPLUNK_HOME.sh
+      mode: 0611
+    when: SPLUNK_HOME.stat.exists == False
+
+  - name: change ownership of everything to splunk account
+    file:
+      path: /opt/splunk
+      state: directory
+      recurse: yes
+      owner: splunk
+      group: splunk
+
+  - name: grant splunk user privileges to start, stop, restart, and check the status of splunk service
+    blockinfile:
+      path: /etc/sudoers
+      state: present
+      block: |
+        splunk ALL= NOPASSWD: /usr/bin/systemctl start Splunkd.service
+        splunk ALL= NOPASSWD: /usr/bin/systemctl stop Splunkd.serrvice
+        splunk ALL= NOPASSWD: /usr/bin/systemctl restart Splunkd.service
+        splunk ALL= NOPASSWD: /usr/bin/systemctl status Splunkd.service
+        splunk ALL= NOPASSWD: /opt/splunk/bin/splunk start
+        splunk ALL= NOPASSWD: /opt/splunk/bin/splunk stop
+        splunk ALL= NOPASSWD: /opt/splunk/bin/splunk restart
+      marker: "# {mark} ANSIBLE MANAGED BLOCK"
+      validate: visudo -cf %s
+
+  - name: check for existing boot start file
+    stat:
+      path: /etc/systemd/system/Splunkd.service
+    register: boot_start
+
+  - name: start splunk enterprise after everything is installed and enable boot start
+    expect:
+      command: sudo /opt/splunk/bin/splunk enable boot-start -user splunk -systemd-managed 1 --accept-license --answer-yes 
+      timeout: 60
+      responses:
+        (.*)Please enter an administrator username(.*): "admin"
+        (.*)Please enter a new password(.*): "changeme"
+        (.*)Please confirm new password(.*): "changeme"
+    when: boot_start.stat.exists == False 
+
+  - name: inject accept license and answer into boot start file
+    lineinfile:
+      path: /etc/systemd/system/Splunkd.service
+      regexp: "ExecStart=/opt"
+      line: "ExecStart=/opt/splunk/bin/splunk _internal_launch_under_systemd --accept-license --answer-yes"
+      state: present
+
+  - name: reload systemctl daemon after making changes
+    command: systemctl daemon-reload
+    register: systemctl_reload
+
+  - debug:
+      var: systemctl_reload.stdout
+
+  - name: start splunk enterprise after everything is installed and boot start set
+    become: yes
+    become_user: splunk
+    command: sudo systemctl start Splunkd.service
+    when: boot_start.stat.exists == True
+
+  - name: check splunk service status
+    systemd:
+      name: Splunkd
+    register: service_status
+
+  - debug:
+      var: service_status.status.ActiveState
+
+  - name: remove temp directory when finished
+    file:
+      path: /tmp/splunk
+      state: absent
+...

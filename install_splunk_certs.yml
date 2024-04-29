@@ -1,0 +1,99 @@
+---
+####################################         Section for Linux Splunk Servers            ###################################
+- hosts: splunk_servers
+  become: true
+  tasks:
+
+  - name: update repo index
+    package:
+      update_cache: yes
+
+  - name: create temp directory
+    file:
+      path: /tmp/splunk
+      state: directory
+
+  - name: copy the splunk key file to the machine
+    copy:
+      src: src: "{{ playbook_dir }}/files/[splunk.key]"
+      dest: /tmp/splunk/splunk.key
+
+  - name: copy the splunk cert file to the machine
+    copy:
+      src: "{{ playbook_dir }}/files/[splunk.pub]"
+      dest: /tmp/splunk/splunk.pub
+
+  - name: check if pub.old previously installed
+    stat:
+      path: /opt/splunk/etc/auth/mycerts/splunk.yc.edu.pub.pem.old
+    register: pub_old_present
+
+  - name: check if pub previously installed
+    stat:
+      path: /opt/splunk/etc/auth/mycerts/splunk.yc.edu.pub.pem
+    register: pub_present
+
+  - name: remove old pub file
+    ansible.builtin.file:
+      path: /opt/splunk/etc/auth/mycerts/splunk.yc.edu.pub.pem.old
+      state: absent
+    when: pub_old_present.stat.exists
+
+  - name: remove old key file
+    ansible.builtin.file:
+      path: /opt/splunk/etc/auth/mycerts/splunk.yc.edu.priv.pem.old
+      state: absent
+    when: pub_old_present.stat.exists
+
+  - name: rename current pub to old
+    copy: 
+      src: /opt/splunk/etc/auth/mycerts/splunk.yc.edu.pub.pem
+      dest: /opt/splunk/etc/auth/mycerts/splunk.yc.edu.pub.pem.old
+      remote_src: true
+
+  - name: rename current key to old
+    copy: 
+      src: /opt/splunk/etc/auth/mycerts/splunk.yc.edu.priv.pem
+      dest: /opt/splunk/etc/auth/mycerts/splunk.yc.edu.priv.pem.old
+      remote_src: true
+  
+  - name: copy new pub
+    copy:
+      src: /tmp/splunk/splunk.pub
+      dest: /opt/splunk/etc/auth/mycerts/splunk.yc.edu.pub.pem
+      mode: 0755
+      remote_src: true
+
+  - name: copy new key
+    copy:
+      src: /tmp/splunk/splunk.key
+      dest: /opt/splunk/etc/auth/mycerts/splunk.yc.edu.priv.pem
+      mode: 0755
+      remote_src: true
+
+  - name: change ownership of everything to splunk account
+    file:
+      path: /opt/splunk/etc/auth/mycerts/
+      state: directory
+      recurse: yes
+      owner: splunk
+      group: splunk
+
+  - name: start splunk enterprise after everything is installed and boot start set
+    become: yes
+    become_user: splunk
+    command: sudo systemctl restart Splunkd.service
+    
+  - name: check splunk service status
+    systemd:
+      name: Splunkd
+    register: service_status
+
+  - debug:
+      var: service_status.status.ActiveState
+
+  - name: remove temp directory when finished
+    file:
+      path: /tmp/splunk
+      state: absent
+...

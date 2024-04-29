@@ -1,0 +1,185 @@
+---
+####################################         Section for Linux Clients           ###################################
+- hosts: linux_forwarders
+  become: true
+  tasks:
+
+  - name: update repo index
+    package:
+      update_cache: yes
+
+  - name: create temp directory
+    file:
+      path: /tmp/splunk
+      state: directory
+
+  - name: copy the splunk forwarder installer to the machine
+    copy:
+      src: "{{ playbook_dir }}/files/[current-splunk-forwarder-rpm]"
+      dest: /tmp/splunk/splunkforwarder-current-linux.rpm
+      mode: 0644
+
+  - name: check if previously installed
+    stat:
+      path: /opt/splunkforwader
+    register: forwarder_present
+
+  - name: check if deploymentclient.conf exists
+    stat:
+      path: /opt/splunkforwarder/etc/apps/zzzdeployment_client/local/deploymentclient.conf
+    register: deploymentclient
+
+  - name: create splunk group if new install
+    group:
+      name: splunk
+    when: forwarder_present.stat.exists == False
+
+  - name: create splunk user if new install
+    user:
+      name: splunk
+      group: splunk
+    when: forwarder_present.stat.exists == False
+      
+
+  - name: install latest splunk forwarder
+    dnf:
+      name: /tmp/splunk/splunkforwarder-current-linux.rpm
+      state: latest
+
+  - name: create deployment client folder structure if not there
+    file:
+      path: /opt/splunkforwarder/etc/apps/zzzdeployment_client/local/
+      state: directory
+      owner: splunk
+      group: splunk
+      mode: 0761
+    when: deploymentclient.stat.exists == False
+
+  - name: create deployment client file if not there
+    copy:
+      src: "{{ playbook_dir }}/files/deploymentclient.conf"
+      dest: /opt/splunkforwarder/etc/apps/zzzdeployment_client/local/deploymentclient.conf
+      mode: 0761
+    when: deploymentclient.stat.exists == False
+
+  - name: write hostname to deployment client file if not there
+    lineinfile:
+      path: /opt/splunkforwarder/etc/apps/zzzdeployment_client/local/deploymentclient.conf
+      line: 'clientName = {{ansible_hostname}}'
+    when: deploymentclient.stat.exists == False
+
+  - name: change ownership of everything to splunk account
+    file:
+      path: /opt/splunkforwarder
+      state: directory
+      recurse: yes
+      owner: splunk
+      group: splunk
+
+  - name: grant splunk user privileges to start, stop, restart, and check the status of forwarder service
+    blockinfile:
+      path: /etc/sudoers
+      state: present
+      regexp: '^splunk'
+      insertafter: EOF
+      block: |
+        splunk ALL= NOPASSWD: /usr/bin/systemctl start SplunkForwarder.service
+        splunk ALL= NOPASSWD: /usr/bin/systemctl stop SplunkForwarder.serrvice
+        splunk ALL= NOPASSWD: /usr/bin/systemctl restart SplunkForwarder.service
+        splunk ALL= NOPASSWD: /usr/bin/systemctl status SplunkForwarder.service
+      validate: visudo -cf %s
+
+  - name: check for existing boot start file
+    stat:
+      path: /etc/systemd/system/SplunkForwarder.service
+    register: boot_start
+
+  - name: start the splunkforwarder after everything is installed and enable boot start
+    expect:
+      command: /opt/splunkforwarder/bin/splunk enable boot-start -user splunk -systemd-managed 1 --accept-license --answer-yes 
+      timeout: 60
+      responses:
+        (.*)Please enter an administrator username(.*): "admin"
+        (.*)Please enter a new password(.*): "changeme"
+        (.*)Please confirm new password(.*): "changeme"
+    when: boot_start.stat.exists == False 
+
+  - name: start the splunk forwarder after everything is installed and boot start already set
+    become: yes
+    become_user: splunk
+    command: sudo systemctl start SplunkForwarder.service
+    when: boot_start.stat.exists == True
+
+  - name: check the splunkforwader status
+    systemd:
+      name: SplunkForwarder
+    register: service_status
+
+  - debug:
+      var: service_status.status.ActiveState
+
+  - name: remove temp directory when finished
+    file:
+      path: /tmp/splunk
+      state: absent
+
+####################################################################################################################
+####################################         Section for Windows Clients         ###################################
+
+- hosts: windows_forwarders
+  tasks:
+
+  - name: create temp directory
+    win_file:
+      path: C:\splunk
+      state: directory
+
+  - name: copy the splunk forwarder installer to the machine
+    win_copy:
+      src: "{{ playbook_dir }}/files/[current-splunk-forwarder-msi]"
+      dest: C:\splunk\splunkforwarder-current.msi
+
+  - name: install latest splunk forwarder
+    win_package:
+      path: 'C:\splunk\splunkforwarder-current.msi'
+      product_id: '{25EC79E7-ADA0-4DF9-AC15-A3D9596884F4}'
+      arguments: AGREETOLICENSE=yes
+      state: present
+
+  - name: check if deploymentclient.conf exists
+    win_stat:
+      path: C:\Program Files\SplunkUniversalForwarder\etc\apps\zzzdeployment_client\local\deploymentclient.conf
+    register: deploymentclient
+
+  - name: create deployment client folder structure if not there
+    win_file:
+      path: C:\Program Files\SplunkUniversalForwarder\etc\apps\zzzdeployment_client\local\
+      state: directory
+    when: deploymentclient.stat.exists == False
+
+  - name: create deployment client file if not there
+    win_copy:
+      src: src: "{{ playbook_dir }}/files/deploymentclient.conf"
+      dest: C:\Program Files\SplunkUniversalForwarder\etc\apps\zzzdeployment_client\local\deploymentclient.conf
+    when: deploymentclient.stat.exists == False 
+
+  - name: write hostname to deployment client file if not there
+    win_lineinfile:
+      path: C:\Program Files\SplunkUniversalForwarder\etc\apps\zzzdeployment_client\local\deploymentclient.conf
+      insertafter: 'clientName = '
+      line: 'clientName = {{ansible_hostname}}'
+    when: deploymentclient.stat.exists == False
+
+  - name: restart the splunk service after creating the deployment client
+    win_service:
+      name: SplunkForwarder
+      state: restarted
+    when: deploymentclient.stat.exists == False
+
+#####     Comment out below during testing so that we don't have to copy the installer file a bunch of times     ##########
+
+  - name: remove temp directory when finished
+    win_file:
+      path: C:\splunk
+      state: absent
+...

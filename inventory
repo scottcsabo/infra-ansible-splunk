@@ -1,0 +1,18 @@
+[splunk_servers]
+#list of splunk servers here
+
+[test_splunk_servers]
+#list of test splunk servers here
+
+#[linux_forwarders]
+#list of linux universal forwarders here
+
+[windows_forwarders]
+#list of Windows universal forwarders here
+
+[windows_forwarders:vars]
+ansible_user='[username@domain]'
+ansible_port=5986 #default port
+ansible_connection=winrm
+ansible_winrm_transport=kerberos
+ansible_winrm_server_cert_validation=ignore
